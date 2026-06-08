@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 echo "=================================="
 echo " Ubuntu Full Stack Installer"
@@ -9,38 +9,49 @@ echo " Nginx + Kong Gateway"
 echo "=================================="
 
 if [ "$EUID" -ne 0 ]; then
-    echo "Jalankan sebagai root atau sudo"
-    exit 1
+echo "Jalankan script sebagai root"
+exit 1
 fi
+
+UBUNTU_CODENAME=$(lsb_release -cs)
 
 echo "[1/8] Update System..."
 apt update
 apt upgrade -y
 
 echo "[2/8] Install Dependencies..."
-apt install -y \
-curl \
-wget \
-gnupg \
-lsb-release \
-ca-certificates \
-software-properties-common \
+apt install -y 
+curl 
+wget 
+gnupg 
+gpg 
+lsb-release 
+ca-certificates 
+software-properties-common 
 apt-transport-https
 
 #################################################
+
 # NODEJS
+
 #################################################
 
 echo "[3/8] Install NodeJS LTS..."
 
 curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+
 apt install -y nodejs
 
+echo "Node Version:"
 node -v
+
+echo "NPM Version:"
 npm -v
 
 #################################################
+
 # ANGULAR
+
 #################################################
 
 echo "[4/8] Install Angular CLI..."
@@ -48,7 +59,9 @@ echo "[4/8] Install Angular CLI..."
 npm install -g @angular/cli
 
 #################################################
+
 # NESTJS
+
 #################################################
 
 echo "[5/8] Install NestJS CLI..."
@@ -56,16 +69,21 @@ echo "[5/8] Install NestJS CLI..."
 npm install -g @nestjs/cli
 
 #################################################
+
 # MONGODB
+
 #################################################
 
-echo "[6/8] Install MongoDB..."
+echo "[6/8] Install MongoDB 8.0..."
 
-wget -qO - https://pgp.mongodb.com/server-8.0.asc \
-| gpg --dearmor -o /usr/share/keyrings/mongodb-server.gpg
+rm -f /etc/apt/sources.list.d/mongodb-org.list
 
-echo \
-"deb [ signed-by=/usr/share/keyrings/mongodb-server.gpg ] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/8.0 multiverse" \
+wget -qO - https://pgp.mongodb.com/server-8.0.asc 
+| gpg --dearmor 
+-o /usr/share/keyrings/mongodb-server.gpg
+
+echo "deb [ signed-by=/usr/share/keyrings/mongodb-server.gpg ] https://repo.mongodb.org/apt/ubuntu ${UBUNTU_CODENAME}/mongodb-org/8.0 multiverse" \
+
 > /etc/apt/sources.list.d/mongodb-org.list
 
 apt update
@@ -74,7 +92,9 @@ apt install -y mongodb-org
 systemctl enable mongod --now
 
 #################################################
+
 # NGINX
+
 #################################################
 
 echo "[7/8] Install Nginx..."
@@ -85,22 +105,53 @@ systemctl unmask nginx 2>/dev/null || true
 systemctl enable nginx --now
 
 #################################################
+
 # KONG
-#################################################
-
-echo "[8/8] Install Kong Gateway..."
-
-curl -fsSL https://download.konghq.com/gateway-3.x-ubuntu/pool/all/k/kong/kong_3.8.0_amd64.deb \
--o /tmp/kong.deb
-
-dpkg -i /tmp/kong.deb || apt -f install -y
-
-echo "database=off" > /etc/kong/kong.conf
-
-kong start || true
 
 #################################################
-# FIREWALL DETECTION
+
+echo "[8/8] Install Kong Gateway 3.14..."
+
+rm -f /etc/apt/sources.list.d/*kong*
+
+curl -1sLf 
+"https://packages.konghq.com/public/gateway-314/gpg.1B7E2AF3C3BF8153.key" 
+| gpg --dearmor 
+| tee /usr/share/keyrings/kong-gateway-314-archive-keyring.gpg >/dev/null
+
+curl -1sLf 
+"https://packages.konghq.com/public/gateway-314/config.deb.txt?distro=ubuntu&codename=${UBUNTU_CODENAME}" 
+| tee /etc/apt/sources.list.d/kong-gateway-314.list >/dev/null
+
+apt update
+
+apt install -y kong-enterprise-edition
+
+if ! command -v kong >/dev/null 2>&1; then
+echo "ERROR: Kong gagal terinstall"
+exit 1
+fi
+
+mkdir -p /etc/kong
+
+if [ ! -f /etc/kong/kong.conf ]; then
+cp /etc/kong/kong.conf.default /etc/kong/kong.conf
+fi
+
+sed -i 's/^#database.*/database = off/' /etc/kong/kong.conf
+
+grep -q "^proxy_listen" /etc/kong/kong.conf || 
+echo "proxy_listen = 0.0.0.0:8000" >> /etc/kong/kong.conf
+
+grep -q "^admin_listen" /etc/kong/kong.conf || 
+echo "admin_listen = 0.0.0.0:8001" >> /etc/kong/kong.conf
+
+kong start -c /etc/kong/kong.conf || true
+
+#################################################
+
+# FIREWALL
+
 #################################################
 
 echo ""
@@ -114,48 +165,62 @@ PORTS=(
 3000
 8000
 8001
+8443
+8444
 27017
 )
 
 if systemctl is-active --quiet firewalld; then
 
-    echo "Detected Firewalld"
+```
+echo "Detected Firewalld"
 
-    for p in "${PORTS[@]}"
-    do
-        firewall-cmd --permanent --add-port=${p}/tcp
-    done
+for p in "${PORTS[@]}"
+do
+    firewall-cmd --permanent --add-port=${p}/tcp
+done
 
-    firewall-cmd --reload
+firewall-cmd --reload
+```
 
 elif command -v ufw >/dev/null 2>&1; then
 
-    echo "Detected UFW"
+```
+echo "Detected UFW"
 
-    for p in "${PORTS[@]}"
-    do
-        ufw allow ${p}/tcp
-    done
+for p in "${PORTS[@]}"
+do
+    ufw allow ${p}/tcp
+done
 
-    yes | ufw enable
+yes | ufw enable
+```
 
 elif command -v nft >/dev/null 2>&1; then
 
-    echo "Detected nftables"
+```
+echo "Detected nftables"
 
-    nft add rule inet filter input tcp dport {22,80,443,3000,8000,8001,27017} accept 2>/dev/null || true
-
+if nft list table inet filter >/dev/null 2>&1; then
+    nft add rule inet filter input tcp dport {22,80,443,3000,8000,8001,8443,8444,27017} accept 2>/dev/null || true
     nft list ruleset > /etc/nftables.conf
+fi
 
-    systemctl enable nftables --now
+systemctl enable nftables --now || true
+```
 
 else
 
-    echo "Firewall tidak ditemukan."
+```
+echo "Firewall tidak ditemukan."
+```
+
 fi
 
 #################################################
+
 # STATUS
+
 #################################################
 
 echo ""
@@ -177,12 +242,19 @@ nest --version || true
 
 echo ""
 echo "MongoDB:"
-systemctl status mongod --no-pager -l | head
+systemctl is-active mongod
 
 echo ""
 echo "Nginx:"
-systemctl status nginx --no-pager -l | head
+systemctl is-active nginx
 
 echo ""
-echo "Open Ports:"
+echo "Kong:"
+kong version || true
+
+echo ""
+echo "Listening Ports:"
 ss -tulpn
+
+echo ""
+echo "Done."
